@@ -9,8 +9,8 @@ MIN_SPREAD_PERCENT = 0.035  # Minimum arbitrage spread to record (covers fees)
 
 # Price tracking
 prices = {
-    "binance": {"BTCUSDT": None, "ETHUSDT": None},
-    "bybit": {"BTCUSDT": None, "ETHUSDT": None}
+    "binance": {"SOLUSDT": None, "XRPUSDT": None},
+    "bybit": {"SOLUSDT": None, "XRPUSDT": None}
 }
 
 # Data storage
@@ -45,38 +45,50 @@ def export_if_needed():
 # Binance Futures (USDT-M)
 async def binance_ws(symbol):
     url = f"wss://fstream.binance.com/ws/{symbol.lower()}@markPrice"
-    async with websockets.connect(url) as ws:
-        while True:
-            msg = await ws.recv()
-            data = json.loads(msg)
-            prices["binance"][symbol] = float(data["p"])
-
+    while True:
+        try:
+            async with websockets.connect(url) as ws:
+                print(f"✅ Connected to Binance {symbol}")
+                while True:
+                    msg = await ws.recv()
+                    data = json.loads(msg)
+                    prices["binance"][symbol] = float(data["p"])
+        except Exception as e:
+            print(f"❌ Binance WS error ({symbol}): {e}. Reconnecting in 5s...")
+            await asyncio.sleep(5)
+            
 # Bybit Futures (v5)
 async def bybit_ws():
     url = "wss://stream.bybit.com/v5/public/linear"
-    async with websockets.connect(url) as ws:
-        await ws.send(json.dumps({
-            "op": "subscribe",
-            "args": ["tickers.BTCUSDT", "tickers.ETHUSDT"]
-        }))
-        while True:
-            msg = await ws.recv()
-            data = json.loads(msg)
-            if "data" in data:
-                try:
-                    items = [data["data"]] if isinstance(data["data"], dict) else data["data"]
-                    for item in items:
-                        symbol = item.get("symbol")
-                        last_price = float(item.get("lastPrice", 0))
-                        if symbol in prices["bybit"]:
-                            prices["bybit"][symbol] = last_price
-                except:
-                    continue
+    while True:
+        try:
+            async with websockets.connect(url) as ws:
+                print("✅ Connected to Bybit")
+                await ws.send(json.dumps({
+                    "op": "subscribe",
+                    "args": ["tickers.SOLUSDT", "tickers.XRPUSDT"]
+                }))
+                while True:
+                    msg = await ws.recv()
+                    data = json.loads(msg)
+                    if "data" in data:
+                        try:
+                            items = [data["data"]] if isinstance(data["data"], dict) else data["data"]
+                            for item in items:
+                                symbol = item.get("symbol")
+                                last_price = float(item.get("lastPrice", 0))
+                                if symbol in prices["bybit"]:
+                                    prices["bybit"][symbol] = last_price
+                        except:
+                            continue
+        except Exception as e:
+            print(f"❌ Bybit WS error: {e}. Reconnecting in 5s...")
+            await asyncio.sleep(5)
 
 # Compare and log
 async def compare_prices():
     while True:
-        for pair in ["BTCUSDT", "ETHUSDT"]:
+        for pair in ["SOLUSDT", "XRPUSDT"]:
             b_price = prices["binance"][pair]
             y_price = prices["bybit"][pair]
 
@@ -98,8 +110,8 @@ async def compare_prices():
 # Main runner
 async def main():
     await asyncio.gather(
-        binance_ws("BTCUSDT"),
-        binance_ws("ETHUSDT"),
+        binance_ws("SOLUSDT"),
+        binance_ws("XRPUSDT"),
         bybit_ws(),
         compare_prices()
     )
