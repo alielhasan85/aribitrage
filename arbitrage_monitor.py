@@ -5,58 +5,59 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 
 # Configuration
-MIN_SPREAD_PERCENT = 0.035  # Minimum arbitrage spread to record (covers fees)
+PAIR = "ETHUSDT"
+MIN_SPREAD_PERCENT = 0.07  # Minimum arbitrage spread to record (covers fees)
 
 # Price tracking
 prices = {
-    "binance": {"SOLUSDT": None, "XRPUSDT": None},
-    "bybit": {"SOLUSDT": None, "XRPUSDT": None}
+    "binance": {PAIR: None},
+    "bybit": {PAIR: None},
 }
 
 # Data storage
-arb_df = pd.DataFrame(columns=["time", "pair", "binance", "bybit", "spread", "percent"])
+arb_df = pd.DataFrame(columns=["time", "pair", "exchange_a", "exchange_b", "price_a", "price_b", "spread", "percent"])
 last_dump_time = datetime.now(timezone.utc)
 
-# Store qualifying opportunities
-def store_arbitrage_row(pair, binance_price, bybit_price, spread, percent):
+def store_arbitrage_row(exchange_a, exchange_b, price_a, price_b, spread, percent):
     global arb_df
     now = datetime.now(timezone.utc).isoformat()
     new_row = {
         "time": now,
-        "pair": pair,
-        "binance": binance_price,
-        "bybit": bybit_price,
+        "pair": PAIR,
+        "exchange_a": exchange_a,
+        "exchange_b": exchange_b,
+        "price_a": price_a,
+        "price_b": price_b,
         "spread": spread,
         "percent": percent
     }
     arb_df = pd.concat([arb_df, pd.DataFrame([new_row])], ignore_index=True)
 
-# Export hourly
 def export_if_needed():
     global arb_df, last_dump_time
     now = datetime.now(timezone.utc)
     if (now - last_dump_time) >= timedelta(hours=1) and not arb_df.empty:
-        filename = now.strftime("arbitrage_log_%Y-%m-%d_%H-%M.csv")
+        filename = now.strftime(f"arbitrage_log_{PAIR}_%Y-%m-%d_%H-%M.csv")
         arb_df.to_csv(filename, index=False)
         print(f"✅ Exported {len(arb_df)} rows to {filename}")
-        arb_df = pd.DataFrame(columns=["time", "pair", "binance", "bybit", "spread", "percent"])
+        arb_df = pd.DataFrame(columns=["time", "pair", "exchange_a", "exchange_b", "price_a", "price_b", "spread", "percent"])
         last_dump_time = now
 
 # Binance Futures (USDT-M)
-async def binance_ws(symbol):
-    url = f"wss://fstream.binance.com/ws/{symbol.lower()}@markPrice"
+async def binance_ws():
+    url = f"wss://fstream.binance.com/ws/{PAIR.lower()}@markPrice"
     while True:
         try:
             async with websockets.connect(url) as ws:
-                print(f"✅ Connected to Binance {symbol}")
+                print(f"✅ Connected to Binance {PAIR}")
                 while True:
                     msg = await ws.recv()
                     data = json.loads(msg)
-                    prices["binance"][symbol] = float(data["p"])
+                    prices["binance"][PAIR] = float(data["p"])
         except Exception as e:
-            print(f"❌ Binance WS error ({symbol}): {e}. Reconnecting in 5s...")
+            print(f"❌ Binance WS error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
-            
+
 # Bybit Futures (v5)
 async def bybit_ws():
     url = "wss://stream.bybit.com/v5/public/linear"
@@ -66,21 +67,15 @@ async def bybit_ws():
                 print("✅ Connected to Bybit")
                 await ws.send(json.dumps({
                     "op": "subscribe",
-                    "args": ["tickers.SOLUSDT", "tickers.XRPUSDT"]
+                    "args": [f"tickers.{PAIR}"]
                 }))
                 while True:
                     msg = await ws.recv()
                     data = json.loads(msg)
                     if "data" in data:
-                        try:
-                            items = [data["data"]] if isinstance(data["data"], dict) else data["data"]
-                            for item in items:
-                                symbol = item.get("symbol")
-                                last_price = float(item.get("lastPrice", 0))
-                                if symbol in prices["bybit"]:
-                                    prices["bybit"][symbol] = last_price
-                        except:
-                            continue
+                        item = data["data"]
+                        last_price = float(item.get("lastPrice", 0))
+                        prices["bybit"][PAIR] = last_price
         except Exception as e:
             print(f"❌ Bybit WS error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
@@ -88,21 +83,16 @@ async def bybit_ws():
 # Compare and log
 async def compare_prices():
     while True:
-        for pair in ["SOLUSDT", "XRPUSDT"]:
-            b_price = prices["binance"][pair]
-            y_price = prices["bybit"][pair]
+        binance_price = prices["binance"][PAIR]
+        bybit_price = prices["bybit"][PAIR]
+        now = datetime.now().strftime("%H:%M:%S")
 
-            if b_price and y_price:
-                spread = y_price - b_price
-                percent = (spread / b_price) * 100
-                now = datetime.now().strftime("%H:%M:%S")
-
-                # Debug print (optional)
-                print(f"[{now}] {pair} | Binance: ${b_price:.2f} | Bybit: ${y_price:.2f} | Spread: ${spread:.2f} ({percent:.3f}%)")
-
-                # Only store if meaningful
-                if abs(percent) >= MIN_SPREAD_PERCENT:
-                    store_arbitrage_row(pair, b_price, y_price, spread, percent)
+        if binance_price and bybit_price:
+            spread = bybit_price - binance_price
+            percent = (spread / binance_price) * 100
+            print(f"[{now}] {PAIR} | binance: ${binance_price:.2f} | bybit: ${bybit_price:.2f} | Spread: ${spread:.2f} ({percent:.3f}%)")
+            if abs(percent) >= MIN_SPREAD_PERCENT:
+                store_arbitrage_row("binance", "bybit", binance_price, bybit_price, spread, percent)
 
         export_if_needed()
         await asyncio.sleep(0.5)
@@ -110,8 +100,7 @@ async def compare_prices():
 # Main runner
 async def main():
     await asyncio.gather(
-        binance_ws("SOLUSDT"),
-        binance_ws("XRPUSDT"),
+        binance_ws(),
         bybit_ws(),
         compare_prices()
     )
