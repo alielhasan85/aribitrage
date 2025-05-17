@@ -4,17 +4,30 @@ import websockets
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 
+# ─────────────────────────────────────────────────────────────
 # Configuration
-PAIR = "ETHUSDT"
-MIN_SPREAD_PERCENT = 0.07  # Minimum arbitrage spread to record (covers fees)
+# ─────────────────────────────────────────────────────────────
+PAIR = "BTCUSDT"
+CAPITAL = 10_000  # Capital per trade
+TARGET_PROFIT_USD = -5  # Minimum profit you want after fees
 
-# Price tracking
+# Fees (as decimals)
+# Binance: maker 0.02% + taker 0.04%
+# Bybit:   maker 0.01% + taker 0.055%
+TOTAL_FEES_PCT = 0.0002 + 0.0004 + 0.0001 + 0.00055  # 0.125%
+
+# Dynamically calculated minimum spread
+MIN_SPREAD_USD = CAPITAL * TOTAL_FEES_PCT + TARGET_PROFIT_USD
+
+# Price storage
 prices = {
     "binance": {PAIR: None},
     "bybit": {PAIR: None},
 }
 
-# Data storage
+# ─────────────────────────────────────────────────────────────
+# Arbitrage storage
+# ─────────────────────────────────────────────────────────────
 arb_df = pd.DataFrame(columns=["time", "pair", "exchange_a", "exchange_b", "price_a", "price_b", "spread", "percent"])
 last_dump_time = datetime.now(timezone.utc)
 
@@ -43,7 +56,9 @@ def export_if_needed():
         arb_df = pd.DataFrame(columns=["time", "pair", "exchange_a", "exchange_b", "price_a", "price_b", "spread", "percent"])
         last_dump_time = now
 
-# Binance Futures (USDT-M)
+# ─────────────────────────────────────────────────────────────
+# Binance WebSocket (USDT-M Futures)
+# ─────────────────────────────────────────────────────────────
 async def binance_ws():
     url = f"wss://fstream.binance.com/ws/{PAIR.lower()}@markPrice"
     while True:
@@ -58,7 +73,9 @@ async def binance_ws():
             print(f"❌ Binance WS error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
 
-# Bybit Futures (v5)
+# ─────────────────────────────────────────────────────────────
+# Bybit WebSocket (USDT Perpetual)
+# ─────────────────────────────────────────────────────────────
 async def bybit_ws():
     url = "wss://stream.bybit.com/v5/public/linear"
     while True:
@@ -80,7 +97,9 @@ async def bybit_ws():
             print(f"❌ Bybit WS error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)
 
-# Compare and log
+# ─────────────────────────────────────────────────────────────
+# Price Comparison
+# ─────────────────────────────────────────────────────────────
 async def compare_prices():
     while True:
         binance_price = prices["binance"][PAIR]
@@ -90,14 +109,18 @@ async def compare_prices():
         if binance_price and bybit_price:
             spread = bybit_price - binance_price
             percent = (spread / binance_price) * 100
+
             print(f"[{now}] {PAIR} | binance: ${binance_price:.2f} | bybit: ${bybit_price:.2f} | Spread: ${spread:.2f} ({percent:.3f}%)")
-            if abs(percent) >= MIN_SPREAD_PERCENT:
+
+            if abs(spread) >= MIN_SPREAD_USD:
                 store_arbitrage_row("binance", "bybit", binance_price, bybit_price, spread, percent)
 
         export_if_needed()
         await asyncio.sleep(0.5)
 
-# Main runner
+# ─────────────────────────────────────────────────────────────
+# Entry Point
+# ─────────────────────────────────────────────────────────────
 async def main():
     await asyncio.gather(
         binance_ws(),
